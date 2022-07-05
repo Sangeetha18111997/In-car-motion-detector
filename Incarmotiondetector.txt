@@ -1,0 +1,388 @@
+/********************************
+    Title:          DHT22 header file
+    Author:         Daniel Campos Olivares 
+    Date:           17/04/2020
+    Modified:       Sangeetha Kabadi Srinivas
+    Code version:   1.0
+    Availability:   https://os.mbed.com
+    URL:            https://os.mbed.com/users/dacamposol/code/DHT22/
+*********************************/
+
+//DHT22.h
+
+#ifndef MBED_DHT22_H
+#define MBED_DHT22_H
+
+#include "mbed.h"
+#define DHT22_ERROR_VALUE -99.5
+
+typedef enum 
+{
+    DHT_ERROR_NONE = 0,
+    DHT_BUS_HUNG,
+    DHT_ERROR_NOT_PRESENT,
+    DHT_ERROR_ACK_TOO_LONG,
+    DHT_ERROR_SYNC_TIMEOUT,
+    DHT_ERROR_DATA_TIMEOUT,
+    DHT_ERROR_CHECKSUM,
+    DHT_ERROR_TOO_QUICK
+} DHT22_ERROR;
+
+class DHT22 
+{
+    private:
+        time_t  dataReadTime;
+        PinName dht22BitData;
+        float   finalHumidity;
+        float   finalTemperature;
+    public:
+        DHT22(PinName Data);
+        ~DHT22();
+        DHT22_ERROR readData(void);
+        float getHumidity();
+        float getTemperatureC();
+        void clockReset();
+};
+
+#endif /*_DHT22_H_*/
+
+
+/********************************
+    Title:          DHT22 library file
+    Author:         Daniel Campos Olivares 
+    Date:           17/04/2020
+    Modified:       VSuryanarayana
+    Code version:   1.0
+    Availability:   https://os.mbed.com
+    URL:            https://os.mbed.com/users/dacamposol/code/DHT22/
+*********************************/
+
+#include "DHT22.h"
+
+#define DHT22_DATA_SIZE 41
+
+DHT22::DHT22(PinName Data) 
+{
+
+    dht22BitData = Data;                // Set Data Pin
+    dataReadTime = time(NULL);
+    finalHumidity = 0;
+    finalTemperature = DHT22_ERROR_VALUE;
+}
+
+DHT22::~DHT22() 
+{
+}
+
+DHT22_ERROR DHT22::readData() 
+{
+    int index, accessVariable, retryCount;
+    int currentTemperature=0;
+    int currentHumidity=0;
+    unsigned int checkSum = 0, csPart1, csPart2, csPart3, csPart4;
+    unsigned int bitTimes[DHT22_DATA_SIZE];
+    DHT22_ERROR dataBit = DHT_ERROR_NONE;
+    time_t currentTime = time(NULL);
+
+    DigitalInOut  dht22Pin(dht22BitData);
+       
+    for (index = 0; index < DHT22_DATA_SIZE; index++) 
+    {
+        bitTimes[index] = 0;
+    }
+    
+    if (int(currentTime - dataReadTime) < 2) 
+    {        
+        dataBit = DHT_ERROR_TOO_QUICK;
+    }   
+    retryCount = 0;
+    do 
+    {
+        if (retryCount > 125) {
+        dataBit = DHT_BUS_HUNG;
+    }
+    retryCount ++;
+    wait_us(2);
+    } 
+    while (dht22Pin==0);      // exit on DHT22 return 'High' Signal within 250us
+    dht22Pin.output();          // set pin to output data
+    dht22Pin = 0;               // MCU send out start signal to DHT22
+    wait_ms(18);                // 18 ms wait (spec: at least 1ms)
+    dht22Pin = 1;               // MCU pull up 
+    wait_us(40);
+    dht22Pin.input();           // set pin to receive data
+    retryCount = 0;
+    do 
+    {
+        if (retryCount > 40)  
+        { // (Spec is 20-40 us high)
+            dataBit = DHT_ERROR_NOT_PRESENT;
+        }
+        retryCount++;
+        wait_us(1);
+    } while (dht22Pin==1);   // Exit on DHT22 pull low within 40us
+    if (dataBit != DHT_ERROR_NONE) 
+    {
+        return dataBit;    
+    }
+    wait_us(80); // DHT pull up ready to transmit data 
+    
+    for (index = 0; index < 5; index++) {
+        for (accessVariable = 0; accessVariable < 8; accessVariable++) {
+            retryCount = 0;
+            do 
+            {
+                if (retryCount > 75)  
+                {
+                    dataBit = DHT_ERROR_DATA_TIMEOUT;
+                }
+                retryCount++;
+                wait_us(1);
+            } while (dht22Pin == 0);
+            wait_us(40);
+            if (dht22Pin == 1) 
+            { 
+                bitTimes[index*8+accessVariable] = 1;
+            } else 
+            {  
+                // The bit value is a 0
+                bitTimes[index*8+accessVariable] = 0;
+            }
+            int count = 0;
+            while (dht22Pin == 1 && count < 100) {  
+            wait_us(1); // Delay for 1 microsecond  
+            count++;  
+            }
+        }
+    }
+    dht22Pin.output();  
+    dht22Pin = 1;
+    currentHumidity    = 0;
+    currentTemperature = 0;
+    checkSum           = 0;
+    for (index=0; index<16; index++) 
+    {
+        if (bitTimes[index+1] > 0) 
+        {
+            currentHumidity |= ( 1 << (15-index));
+        }
+    }
+    for (index=0; index<16; index ++) 
+    {
+        if (bitTimes[index+17] > 0) 
+        {
+            currentTemperature |= (1 <<(15-index));
+        }
+    }
+
+    for (index=0; index<8; index++) 
+    {
+        if (bitTimes[index+33] > 0) 
+        {
+            checkSum |= (1 << (7-index));
+        }
+    }
+    finalHumidity = (float(currentHumidity) / 10.0);
+    
+    if ((currentTemperature & 0x8000)==0x8000) 
+    {        
+        finalTemperature = (float(currentTemperature & 0x7FFF) / 10.0) * -1.0;
+    } 
+    else 
+    {
+        finalTemperature = float(currentTemperature) / 10.0;
+    }
+
+    csPart1 = currentHumidity >> 8;
+    csPart2 = currentHumidity & 0xFF;
+    csPart3 = currentTemperature >> 8;
+    csPart4 = currentTemperature & 0xFF;
+    if (checkSum == ((csPart1 + csPart2 + csPart3 + csPart4) & 0xFF)) 
+    {
+        dataReadTime = currentTime;
+        dataBit = DHT_ERROR_NONE;
+    } 
+    else 
+    {
+        dataBit = DHT_ERROR_CHECKSUM;
+    }
+    return dataBit;
+}
+
+float DHT22::getTemperatureC() 
+{
+    return finalTemperature;
+}
+
+float DHT22::getHumidity()
+{
+    return finalHumidity;
+}
+
+
+
+
+/********************************
+    File Name:  Safety Occupant System 
+    Author:     NNazar
+    Date:       21/03/2020
+    Modified:   Sangeetha Kabadi Srinivas
+    ©Fanshawe College, 2016
+    Description: FERMENTATION VAT SYSTEM
+    
+*********************************/
+//main.cpp
+#define TRUE 1
+#define FALSE 0
+#define MAXSAMP 5 //this is maximum samples to collect the data from motion sensors
+
+#include "mbed.h"
+#include "DHT22.h"
+DHT22       dht22(p5);
+AnalogIn    pressSense(p16);
+DigitalOut  led1(LED1);
+DigitalOut  led2(LED2);
+DigitalOut  led3(LED3);
+DigitalOut  led4(LED4);
+DigitalIn   PIR1(p19);
+DigitalIn   PIR2(p20);
+PwmOut      buzzer1(p25);
+PwmOut      buzzer2(p26);
+DigitalIn   carSwitch(p7);
+DigitalIn   hud(p8);
+DigitalIn   door(p9);
+DigitalOut  carLights(p22);
+DigitalOut  windowLight1(p23);
+DigitalOut  windowLight2(p24);
+DigitalOut  hudLight(p21);
+
+
+typedef struct motions
+{
+    char motionPresSamp;
+    char insertAt;
+}motions_t;
+
+motions_t motionData;
+
+//Global variables
+char ignition;
+char alarmCount;
+
+/*******initialize:*******
+Author:     Sangeetha Kabadi Srinivas
+Date:       25/3/2020
+Modified:   None
+Desc:       Function which initialises all the variables 
+Input:      None
+Returns:    None
+****************************/
+void intiallize(void)
+{
+    motionData.motionPresSamp=0;
+    motionData.insertAt=0;
+    ignition=FALSE;
+}//eo initialize::
+
+/*****doorOpen:*************
+Author:     Vsuryanarayana
+Date:       25/3/2020
+Modified:   None
+Desc:       A function what actions are taken when the door is opened
+Input:      None
+Returns:    None
+****************************/
+void doorOpen(void) //this is a door open function where all the conditions are off when the door is opened
+{
+    led1=0;
+    hudLight=FALSE;
+    buzzer1 = FALSE;
+    buzzer2 = FALSE;
+    windowLight1=FALSE;
+    windowLight2=FALSE;
+    alarmCount=0;
+}//eo doorOpen::
+
+//*********Main program*************
+int main() 
+{
+    double hum;
+    double temp;
+    intiallize();
+    printf("\r\nSetting up...\r\n"); 
+    while (1) 
+    {
+        printf("\033[2J");
+        if(carSwitch==0)  //initially when car switch is low
+        {
+            wait(1);
+            ignition=!ignition; 
+            while(ignition) //when it is in drive mode
+            {    
+                printf("\033[2J");    
+                printf("\e[1;0HDrive Mode");
+                wait(1);
+                if(PIR1.read() == TRUE || PIR2.read() == TRUE||pressSense>0.3) //if motion sensor detects any motion and pressure is true during drive mode
+                {
+                    if(motionData.insertAt<MAXSAMP) //collects the motion until max sample value
+                    {
+                    motionData.motionPresSamp+=1;  
+                    motionData.insertAt++;
+                    }
+                    else
+                    {
+                    motionData.insertAt=0;
+                    }    
+                }
+                if(carSwitch==0)
+                {
+                    wait(1);
+                    while(hud==1) //hud is a pushbutton here so it is active low 
+                    {
+                        printf("\033[2J");
+                        printf("\e[1;0HDrive Mode off"); 
+                        if(motionData.motionPresSamp>MAXSAMP-1||PIR1.read() == TRUE)
+                        {   
+                            hudLight=TRUE; //hud is true when the motion sensor is high and pressure is high during drive mode
+                            printf("\e[2;0HKid or Baby present in backseat");                   
+                        }
+                    }
+                    ignition=!ignition;//ignition is off
+                }
+                
+            }//eo while ignition is off::
+        }//eo if carSwitch ::
+        dht22.readData(); //when the ignition is off, it reads the data from outside temperature
+        hum=dht22.getHumidity(); //gets humidity value when ignition is off
+        temp=dht22.getTemperatureC();// retrives temperature value inside the car
+        wait(2);
+        if(PIR1.read()==1||PIR2.read()==1||pressSense>0.3) //if motion is detected and pressure is high
+         {
+            printf("\033[3;0Htemperature: %3.1f, humidity: %3.1f",temp,hum);
+            wait(2);
+            printf("\033[4;0HKids or pets are present"); 
+            if(temp>25||hum>40) //severity level 1 condition when temperature is higher than 25°C and humidity is greater than 40
+            { 
+                printf("\033[3;0Htemperature: %3.1f, humidity: %3.1f",temp,hum);
+                carLights=1; //car light LED's are on
+                windowLight1=1; //Windows are lowered which are indicated by LED's
+                buzzer1=1; //buzzer is on
+                printf("\033[5;0HWindows Lowered");
+                led1=1;
+                alarmCount++; //alarm count is increased to detect if it has reached severity level 2 condition
+            }
+            else if(alarmCount>=5||temp>30||hum>40)//if alarm count is greater than or equal to 5, and temperature and pressure increases an reaches level 2 conidtion
+            {
+                carLights=1;
+                buzzer1=1;
+                buzzer2=1;
+                printf("\e[6;0HSeverity level 2");
+                windowLight2=TRUE;
+            }
+            if(door==0) //system checks if the door is opened and if the door is opened, then all the conditions are false.
+            {
+                doorOpen();
+            }
+        }  //eo if PIR motion sensor abd pressure is detected::
+    }//while::
+}//eo main::
